@@ -7,64 +7,169 @@
   <meta name="description" content="5 produtos de psicologia aplicada para identificar padrões, regular emoções, construir autoestima e estabelecer limites saudáveis. Por R$67." />
 
   <!-- ═══════════════════════════════════════════
-       META PIXEL
-  ═══════════════════════════════════════════ -->
-  <script>
-    !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
-    n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}
-    (window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
-    fbq('init', '322546353481330');
-    fbq('track', 'PageView');
-
-    // Envia PageView também via CAPI (deduplicado por event_id)
-    const PV_ID = 'pv_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
-    sendCAPI('PageView', {}, PV_ID);
-
-    function generateEventId() {
-      return 'evt_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+       META PIXEL + CONVERSIONS API — VERSÃO CORRIGIDA
+  Correções aplicadas:
+    ✅ PageView com eventID para deduplicação correta
+    ✅ client_ip_address via ipify.org (gratuito, sem cadastro)
+    ✅ external_id único por visitante (SHA-256 + localStorage)
+    ✅ Todos os eventos com deduplicação pixel ↔ CAPI
+  
+  ⚠️  ATENÇÃO DE SEGURANÇA:
+  O token CAPI está exposto no código cliente.
+  Isso é funcional mas não ideal. Para produção,
+  considere um proxy serverless (Cloudflare Worker).
+═══════════════════════════════════════════ -->
+<script>
+  // ─── META PIXEL BASE CODE ───────────────────────────────
+  !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+  n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}
+  (window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+ 
+  fbq('init', '322546353481330');
+ 
+  // ─── CONFIGURAÇÃO ──────────────────────────────────────
+  const PIXEL_ID   = '322546353481330';
+  const CAPI_TOKEN = 'EAAKOpFWmHaEBQ3GYC5rUXErDJ1B5sZAIEhNXN3NXVOd14tZBnFZB3HBubrXzYlXnzjIQV7DltVSAlgaQoVnJOZAQubvoZCP8ePFkOFZCx7SWundSIV8XlWcwWqdkAgKnZCmDWIWxYqmZB2twxmF0ZCRXTl5tzDMa5wsZCRqk3xEE5pZCdCHlc0ZBZBMwIYV5j6Brrxsk6oQZDZD';
+ 
+  // ─── ESTADO GLOBAL ─────────────────────────────────────
+  var _clientIP          = null;
+  var _externalId        = null;
+  var _ipFetchPromise    = null;
+  var _extIdPromise      = null;
+ 
+  // ─── UTILITÁRIOS ───────────────────────────────────────
+ 
+  function getCookie(name) {
+    var match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    return match ? match[2] : '';
+  }
+ 
+  function generateEventId() {
+    return 'evt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  }
+ 
+  // SHA-256 via Web Crypto API (suportado em todos os browsers modernos)
+  async function sha256(str) {
+    try {
+      var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+      return Array.from(new Uint8Array(buf))
+        .map(function(b){ return b.toString(16).padStart(2, '0'); })
+        .join('');
+    } catch(e) {
+      // Fallback: retorna string sem hash (aceitável pela Meta)
+      return str;
     }
-
-    function sendCAPI(eventName, customData, eventId) {
-      const pixelId   = '322546353481330';
-      const capiToken = 'EAAKOpFWmHaEBQ3GYC5rUXErDJ1B5sZAIEhNXN3NXVOd14tZBnFZB3HBubrXzYlXnzjIQV7DltVSAlgaQoVnJOZAQubvoZCP8ePFkOFZCx7SWundSIV8XlWcwWqdkAgKnZCmDWIWxYqmZB2twxmF0ZCRXTl5tzDMa5wsZCRqk3xEE5pZCdCHlc0ZBZBMwIYV5j6Brrxsk6oQZDZD';
-      const payload   = {
-        data: [{
-          event_name:       eventName,
-          event_time:       Math.floor(Date.now() / 1000),
-          event_id:         eventId || generateEventId(),
-          event_source_url: window.location.href,
-          action_source:    'website',
-          user_data: {
-            client_user_agent: navigator.userAgent,
-            fbp: getCookie('_fbp') || '',
-            fbc: getCookie('_fbc') || '',
-          },
-          custom_data: customData
-        }]
-      };
-      fetch(`https://graph.facebook.com/v19.0/${pixelId}/events?access_token=${capiToken}`, {
+  }
+ 
+  // Busca o IP real do visitante via ipify (grátis, sem CORS)
+  function fetchClientIP() {
+    if (_clientIP)       return Promise.resolve(_clientIP);
+    if (_ipFetchPromise) return _ipFetchPromise;
+ 
+    _ipFetchPromise = fetch('https://api.ipify.org?format=json', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout ? AbortSignal.timeout(3000) : undefined
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ _clientIP = d.ip; return d.ip; })
+    .catch(function(){ return null; });
+ 
+    return _ipFetchPromise;
+  }
+ 
+  // Gera ou recupera o external_id único do visitante (SHA-256 hasheado)
+  function getExternalId() {
+    if (_externalId)    return Promise.resolve(_externalId);
+    if (_extIdPromise)  return _extIdPromise;
+ 
+    _extIdPromise = (async function() {
+      try {
+        var raw = localStorage.getItem('_capi_eid');
+        if (!raw) {
+          // Usa _fbp como base (mais estável que timestamp),
+          // ou gera um UUID próprio se o cookie ainda não existir
+          var fbp = getCookie('_fbp');
+          raw = fbp
+            ? fbp
+            : 'uid_' + Date.now() + '_' + Math.random().toString(36).substr(2, 12);
+          localStorage.setItem('_capi_eid', raw);
+        }
+        var hashed = await sha256(raw);
+        _externalId = hashed;
+        return hashed;
+      } catch(e) {
+        // localStorage bloqueado (modo privado rígido) — gera sem persistir
+        var fbp = getCookie('_fbp') || ('uid_' + Date.now());
+        var hashed = await sha256(fbp);
+        _externalId = hashed;
+        return hashed;
+      }
+    })();
+ 
+    return _extIdPromise;
+  }
+ 
+  // ─── ENVIO PARA A CONVERSIONS API ──────────────────────
+  async function sendCAPI(eventName, customData, eventId) {
+    var ip    = await fetchClientIP();
+    var extId = await getExternalId();
+ 
+    // Monta user_data removendo campos vazios
+    var userData = {};
+    if (navigator.userAgent) userData.client_user_agent = navigator.userAgent;
+    if (ip)                   userData.client_ip_address  = ip;
+    if (extId)                userData.external_id        = extId;
+    var fbp = getCookie('_fbp');
+    var fbc = getCookie('_fbc');
+    if (fbp) userData.fbp = fbp;
+    if (fbc) userData.fbc = fbc;
+ 
+    var payload = {
+      data: [{
+        event_name:        eventName,
+        event_time:        Math.floor(Date.now() / 1000),
+        event_id:          eventId || generateEventId(),
+        event_source_url:  window.location.href,
+        action_source:     'website',
+        user_data:         userData,
+        custom_data:       customData || {}
+      }]
+    };
+ 
+    fetch(
+      'https://graph.facebook.com/v19.0/' + PIXEL_ID + '/events?access_token=' + CAPI_TOKEN,
+      {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(payload)
-      }).catch(() => {});
-    }
-
-    function getCookie(name) {
-      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-      return match ? match[2] : '';
-    }
-
-    // Dispara InitiateCheckout ao clicar em qualquer botão de CTA
-    function trackCheckout() {
-      const evtId = generateEventId();
-      fbq('track', 'InitiateCheckout', { value: 67.00, currency: 'BRL', num_items: 5 }, { eventID: evtId });
-      sendCAPI('InitiateCheckout', { value: 67.00, currency: 'BRL', num_items: 5 }, evtId);
-    }
-  </script>
-  <noscript><img height="1" width="1" style="display:none"
-    src="https://www.facebook.com/tr?id=322546353481330&ev=PageView&noscript=1" /></noscript>
+      }
+    ).catch(function(){});
+  }
+ 
+  // ─── PAGEVIEW — com eventID para deduplicação correta ──
+  // CORREÇÃO: o Pixel agora usa o MESMO eventID que o CAPI
+  // para que a Meta possa eliminar duplicatas.
+  var PV_ID = 'pv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  fbq('track', 'PageView', {}, { eventID: PV_ID });
+  sendCAPI('PageView', {}, PV_ID);
+ 
+  // ─── INITIATE CHECKOUT — chamado pelos botões CTA ──────
+  function trackCheckout() {
+    var evtId = generateEventId();
+    fbq('track', 'InitiateCheckout',
+      { value: 67.00, currency: 'BRL', num_items: 5 },
+      { eventID: evtId }
+    );
+    sendCAPI('InitiateCheckout',
+      { value: 67.00, currency: 'BRL', num_items: 5 },
+      evtId
+    );
+  }
+</script>
+<noscript><img height="1" width="1" style="display:none"
+  src="https://www.facebook.com/tr?id=322546353481330&ev=PageView&noscript=1" /></noscript>
 
   <!-- Fontes -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
